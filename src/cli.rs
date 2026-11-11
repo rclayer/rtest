@@ -64,6 +64,10 @@ pub struct Args {
     #[arg(long)]
     pub quiet_collection: bool,
 
+    /// Combine pytest worker reports into one live terminal session
+    #[arg(long)]
+    pub unified_output: bool,
+
     /// Test files or directories to run
     #[arg(help = "Test files or directories to run")]
     pub files: Vec<String>,

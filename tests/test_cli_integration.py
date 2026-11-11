@@ -5,12 +5,71 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from queue import Queue
+from threading import Thread
+from typing import TextIO
 
 import rtest
 from rtest.exit_code import ExitCodeValues
 
 
 class TestPytestFunctionSelection:
+    def test_parallel_output_arrives_before_workers_can_finish(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gate = root / "continue"
+            (root / "test_progress.py").write_text(
+                "import sys, time\nfrom pathlib import Path\n"
+                + "\n".join(
+                    f"def test_worker_{index}():\n"
+                    f"    print('stdout:{index}')\n"
+                    f"    print('stderr:{index}', file=sys.stderr)\n"
+                    "    deadline = time.monotonic() + 25\n"
+                    "    while not Path('continue').exists():\n"
+                    "        assert time.monotonic() < deadline, 'parent did not receive live output'\n"
+                    "        time.sleep(0.01)\n"
+                    for index in range(2)
+                )
+            )
+            environment = os.environ.copy()
+            environment.pop("PYTEST_PLUGINS", None)
+            environment.update(PYTEST_DISABLE_PLUGIN_AUTOLOAD="1", PYTEST_ADDOPTS="-s", PYTHONUNBUFFERED="0")
+            messages: Queue[tuple[str, str]] = Queue()
+
+            def read(stream: TextIO, channel: str) -> None:
+                for line in stream:
+                    messages.put((channel, line))
+
+            with subprocess.Popen(
+                [sys.executable, "-m", "rtest", "--pytest-functions", "--quiet-collection", "-n", "2"],
+                cwd=root,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            ) as process:
+                assert process.stdout is not None and process.stderr is not None
+                readers = [
+                    Thread(target=read, args=(process.stdout, "stdout"), daemon=True),
+                    Thread(target=read, args=(process.stderr, "stderr"), daemon=True),
+                ]
+                for reader in readers:
+                    reader.start()
+                expected = {(channel, index) for channel in ("stdout", "stderr") for index in range(2)}
+                try:
+                    while expected:
+                        channel, line = messages.get(timeout=15)
+                        for marker in expected.copy():
+                            if marker[0] == channel and f"{channel}:{marker[1]}" in line:
+                                expected.remove(marker)
+                    assert process.poll() is None
+                finally:
+                    gate.touch()
+                    process.wait(timeout=15)
+                    for reader in readers:
+                        reader.join(timeout=5)
+                assert process.returncode == 0
+
     def test_parallel_workers_have_isolated_cache_directories(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -69,6 +69,16 @@ tests; a globally empty selection retains pytest's exit code 5.
 Parallel pytest workers use separate temporary cache directories. Pytest's
 `cache` fixture remains available within each worker; cached values do not
 persist between parallel rtest invocations.
+Workers inherit stdout and stderr and use unbuffered Python output, so pytest
+progress and failures appear during execution. Worker startup messages identify
+the assigned selector counts; concurrent sessions can interleave their output.
+
+`--unified-output` combines parallel pytest results into one live pytest terminal
+reporter, with one collection count and final summary. Workers send serialized
+reports instead of printing separate session headers. Failures, captured output,
+warnings, skips, expected failures, and durations retain pytest's reporting.
+The reporter does not collect or execute tests itself. Uncaptured `-s` output
+still streams directly, and results appear as parallel tests finish.
 
 `--quiet-collection` suppresses the static selector listing and parameter
 expansion warnings when embedding rtest in another CLI. Collection errors are

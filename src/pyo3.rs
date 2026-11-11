@@ -232,6 +232,11 @@ fn main_cli_with_args(py: Python, argv: Vec<String>) {
                     // Group tests by subproject
                     let test_groups = subproject::group_tests_by_subproject(&rootpath, test_nodes);
 
+                    if let Err(error) = crate::runner::report_worker_count(test_groups.len()) {
+                        eprintln!("Cannot report worker count: {error}");
+                        std::process::exit(1);
+                    }
+
                     let mut exit_codes = Vec::new();
 
                     for (subproject_root, tests) in test_groups {

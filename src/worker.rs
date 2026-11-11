@@ -1,6 +1,6 @@
 use std::fmt;
 use std::path::PathBuf;
-use std::process::Output;
+use std::process::ExitStatus;
 use std::thread;
 
 use crate::pytest_executor::pytest_command;
@@ -25,7 +25,7 @@ impl std::error::Error for WorkerError {}
 #[derive(Debug)]
 pub struct WorkerResult {
     pub worker_id: usize,
-    pub result: Result<Output, WorkerError>,
+    pub result: Result<ExitStatus, WorkerError>,
 }
 
 /// Configuration for a worker task
@@ -45,7 +45,7 @@ pub struct WorkerPool {
 
 struct WorkerHandle {
     id: usize,
-    handle: thread::JoinHandle<std::io::Result<Output>>,
+    handle: thread::JoinHandle<std::io::Result<ExitStatus>>,
 }
 
 impl WorkerPool {
@@ -55,6 +55,12 @@ impl WorkerPool {
 
     pub fn spawn_worker(&mut self, task: WorkerTask) {
         let worker_id = task.worker_id;
+        if std::env::var_os("_RTEST_REPORT_DIRECTORY").is_none() {
+            eprintln!(
+                "rtest: starting worker {worker_id} ({} selectors)",
+                task.tests.len()
+            );
+        }
         let handle = thread::spawn(move || {
             // Independent pytest sessions cannot atomically share cache updates
             // on every supported platform, notably Windows.
@@ -71,7 +77,9 @@ impl WorkerPool {
                 Some(&task.working_dir),
                 &task.env_vars,
             )?;
-            prepared.command.output()
+            // Inherit both streams instead of retaining all progress until every
+            // worker exits. Python must also flush when rtest itself is piped.
+            prepared.command.env("PYTHONUNBUFFERED", "1").status()
         });
 
         self.workers.push(WorkerHandle {

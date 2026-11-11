@@ -41,7 +41,15 @@ pub struct ParallelExecutionConfig<'a> {
 
 impl PytestRunner {
     pub fn new(program: String, env_vars: &[String]) -> Self {
-        let initial_args = vec!["-m".into(), "pytest".into()];
+        let mut initial_args = vec!["-m".into(), "pytest".into()];
+        if std::env::var_os("_RTEST_REPORT_DIRECTORY").is_some() {
+            initial_args.extend([
+                "-p".into(),
+                "no:sugar".into(),
+                "-p".into(),
+                "rtest.pytest_reporter".into(),
+            ]);
+        }
 
         // Parse environment variables from KEY=VALUE format
         let parsed_env_vars = parse_env_vars(env_vars, |env_str| {
@@ -54,6 +62,16 @@ impl PytestRunner {
             env_vars: parsed_env_vars,
         }
     }
+}
+
+pub(crate) fn report_worker_count(count: usize) -> std::io::Result<()> {
+    if let Some(directory) = std::env::var_os("_RTEST_REPORT_DIRECTORY") {
+        std::fs::write(
+            Path::new(&directory).join("runner.jsonl"),
+            format!("{{\"kind\":\"workers\",\"count\":{count}}}\n"),
+        )?;
+    }
+    Ok(())
 }
 
 pub(crate) fn parse_env_vars(env_vars: &[String], warn: impl Fn(&str)) -> Vec<(String, String)> {
@@ -98,18 +116,17 @@ pub fn execute_tests_parallel(config: &ParallelExecutionConfig, test_nodes: Vec<
         }
     }
 
+    let report_error = report_worker_count(worker_id).err();
+    if let Some(error) = &report_error {
+        eprintln!("Cannot report worker count: {error}");
+    }
     let mut exit_codes = Vec::new();
     for result in worker_pool.wait_for_all() {
-        println!("=== Worker {} ===", result.worker_id);
         let code = match result.result {
-            Ok(output) => {
-                print!("{}", String::from_utf8_lossy(&output.stdout));
-                eprint!("{}", String::from_utf8_lossy(&output.stderr));
-                output.status.code().unwrap_or_else(|| {
-                    eprintln!("Worker terminated: {}", output.status);
-                    1
-                })
-            }
+            Ok(status) => status.code().unwrap_or_else(|| {
+                eprintln!("Worker {} terminated: {status}", result.worker_id);
+                1
+            }),
             Err(error) => {
                 eprintln!("{error}");
                 1
@@ -118,7 +135,11 @@ pub fn execute_tests_parallel(config: &ParallelExecutionConfig, test_nodes: Vec<
         exit_codes.push(code);
     }
 
-    pytest_exit_code(exit_codes)
+    if report_error.is_some() {
+        1
+    } else {
+        pytest_exit_code(exit_codes)
+    }
 }
 
 #[cfg(test)]
